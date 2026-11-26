@@ -43,9 +43,11 @@ jobs:
                   超级电容器 材料科学 材料科学与工程 材料学 材料工程 冶金 热处理 金相
                   铝合金 铸铝 焊接 模具 锂电池 电池 化学 无机非金属材料 金属加工
               '''),
-              ('Communication and relationships', 13, '''
-                  人际关系 人际交往 沟通技巧 聊天技巧 恋爱 爱情 男女感情 约会 情感
-                  社交 情商 口才 人际沟通 情感交流 心理学 心理 说话技巧 聊天 脱单
+              ('Communication and relationships', 20, '''
+                  人际关系 人际交往 人际沟通 沟通技巧 聊天技巧 恋爱 男女感情 情感
+                  约会 情感交流 社交技巧 如何聊天 说话技巧 社交 口才 情商 聊天 爱情
+                  沟通 相处 两性关系 恋爱技巧 恋爱经验 情绪管理 亲密关系 表达能力
+                  学会说话 朋友 相亲 脱单 心理学 心理 职场沟通
               '''),
               ('Mechanical design and simulation', 12, '''
                   ansys abaqus solidworks autocad ug 机械制图 工程制图 机械设计
@@ -64,18 +66,25 @@ jobs:
 
           existing_client = TiebaClient(bduss)
 
-          def get_followed_ids():
-              return {int(forum['id']) for forum in existing_client.get_favorites() if forum.get('id')}
+          def get_followed_forums():
+              return {
+                  int(forum['id']): (forum.get('name') or '').strip().casefold()
+                  for forum in existing_client.get_favorites()
+                  if forum.get('id')
+              }
 
-          async def add_forums(known_ids):
+          async def add_forums(known_forums):
+              known_ids = known_forums.keys()
+              known_names = set(known_forums.values())
               requested = {}
               rejected = 0
               consecutive_rejections = 0
               async with aiotieba.Client(BDUSS=bduss) as client:
                   for group, limit, names in GROUPS[1:] + GROUPS[:1]:
-                      group_added = 0
-                      for name in names.split():
-                          if len(known_ids | requested.keys()) >= TARGET or group_added >= limit or consecutive_rejections >= 2:
+                      candidates = names.split()
+                      group_count = len(known_names & {name.casefold() for name in candidates})
+                      for name in candidates:
+                          if len(known_ids | requested.keys()) >= TARGET or group_count >= limit or consecutive_rejections >= 2:
                               break
                           fid = int(await client.get_fid(name))
                           if not fid or fid in known_ids or fid in requested:
@@ -83,7 +92,7 @@ jobs:
                           result = await client.follow_forum(fid)
                           if result:
                               requested[fid] = group
-                              group_added += 1
+                              group_count += 1
                               consecutive_rejections = 0
                           else:
                               rejected += 1
@@ -101,7 +110,7 @@ jobs:
               return requested
 
           def main():
-              before = get_followed_ids()
+              before = get_followed_forums()
               if not before:
                   raise SystemExit('Could not verify the existing followed forums.')
               print(f'Forums before: {len(before)}', flush=True)
@@ -110,16 +119,17 @@ jobs:
               after = before
               for delay in (0, 3, 6):
                   time.sleep(delay)
-                  after = get_followed_ids()
-                  if before | requested.keys() <= after:
+                  after = get_followed_forums()
+                  if before.keys() | requested.keys() <= after.keys():
                       break
-              if not before <= after:
+              if not before.keys() <= after.keys():
                   raise SystemExit('Could not verify the follow list after the operation.')
 
+              new_count = len(after.keys() - before.keys())
               print(f'Forums after: {len(after)}')
-              print(f'New follows verified: {len(after - before)}')
+              print(f'New follows verified: {new_count}')
               with open(os.environ.get('GITHUB_OUTPUT', os.devnull), 'a', encoding='utf-8') as output:
-                  print(f'new_follows={len(after - before)}', file=output)
+                  print(f'new_follows={new_count}', file=output)
               for group, _, _ in GROUPS:
                   count = sum(fid in after and category == group for fid, category in requested.items())
                   print(f'{group}: {count}')
