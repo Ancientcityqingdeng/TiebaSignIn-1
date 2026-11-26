@@ -1,0 +1,125 @@
+name: Follow selected Tieba forums and verify sign-in
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tieba-follow-once
+  cancel-in-progress: false
+
+jobs:
+  follow-and-sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - run: pip install requests aiotieba==4.9.0
+
+      - name: Follow selected forums
+        env:
+          BDUSS: ${{ secrets.BDUSS }}
+        run: |
+          python - <<'PY'
+          import asyncio
+          import logging
+          import os
+          import time
+
+          logging.disable(logging.CRITICAL)
+          import aiotieba
+          from tieba_client import TiebaClient
+
+          TARGET = 50
+          GROUPS = [
+              ('Casting, materials and electrochemistry', 16, '''
+                  铸造 procast 铸造工艺 铸铁 球墨铸铁 铸造模具 锻造 金属材料 电化学
+                  超级电容器 材料科学 材料科学与工程 材料学 材料工程 冶金 热处理 金相
+                  铝合金 铸铝 焊接 模具 锂电池 电池 化学 无机非金属材料 金属加工
+              '''),
+              ('Communication and relationships', 13, '''
+                  人际关系 人际交往 沟通技巧 聊天技巧 恋爱 爱情 男女感情 约会 情感
+                  社交 情商 口才 人际沟通 情感交流 心理学 心理 说话技巧 聊天 脱单
+              '''),
+              ('Mechanical design and simulation', 12, '''
+                  ansys abaqus solidworks autocad ug 机械制图 工程制图 机械设计
+                  有限元 cae 流体力学 fluent 机械工程 机械制造 inventor creo
+                  工业设计 仿真 cad 力学 数控 3d打印
+              '''),
+              ('Research and software tools', TARGET, '''
+                  origin originlab matlab python github 开源 编程 科研 数据分析
+                  绘图 学术论文 excel linux 科学 计算机 windows 工程师
+              '''),
+          ]
+
+          bduss = os.environ.get('BDUSS', '')
+          if not bduss:
+              raise SystemExit('The BDUSS secret is missing.')
+
+          existing_client = TiebaClient(bduss)
+
+          def get_followed_ids():
+              return {int(forum['id']) for forum in existing_client.get_favorites() if forum.get('id')}
+
+          async def add_forums(known_ids):
+              requested = {}
+              rejected = 0
+              async with aiotieba.Client(BDUSS=bduss) as client:
+                  for group, limit, names in GROUPS:
+                      group_added = 0
+                      for name in names.split():
+                          if len(known_ids | requested.keys()) >= TARGET or group_added >= limit:
+                              break
+                          fid = int(await client.get_fid(name))
+                          if not fid or fid in known_ids or fid in requested:
+                              continue
+                          result = await client.follow_forum(fid)
+                          if result:
+                              requested[fid] = group
+                              group_added += 1
+                          else:
+                              rejected += 1
+                          await asyncio.sleep(0.8)
+              print(f'Follow requests rejected: {rejected}')
+              return requested
+
+          def main():
+              before = get_followed_ids()
+              if not before:
+                  raise SystemExit('Could not verify the existing followed forums.')
+              print(f'Forums before: {len(before)}', flush=True)
+              requested = asyncio.run(add_forums(before)) if len(before) < TARGET else {}
+
+              after = before
+              for delay in (0, 3, 6):
+                  time.sleep(delay)
+                  after = get_followed_ids()
+                  if before | requested.keys() <= after:
+                      break
+              if not before <= after:
+                  raise SystemExit('Could not verify the follow list after the operation.')
+
+              print(f'Forums after: {len(after)}')
+              print(f'New follows verified: {len(after - before)}')
+              for group, _, _ in GROUPS:
+                  count = sum(fid in after and category == group for fid, category in requested.items())
+                  print(f'{group}: {count}')
+
+          try:
+              main()
+          except Exception as error:
+              raise SystemExit(f'Follow step failed: {type(error).__name__}') from None
+          PY
+
+      - name: Verify sign-in
+        env:
+          BDUSS: ${{ secrets.BDUSS }}
+        shell: bash
+        run: |
+          set -o pipefail
+          python run.py 2>&1 | awk '/^(贴吧总数|签到成功|已经签到|被屏蔽的|签到失败):/ || /获取 tbs 失败，退出|未获取到关注的贴吧，签到结束/ { print }'
