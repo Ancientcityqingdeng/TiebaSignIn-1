@@ -22,6 +22,7 @@ jobs:
       - run: pip install requests aiotieba==4.9.0
 
       - name: Follow selected forums
+        id: follow
         env:
           BDUSS: ${{ secrets.BDUSS }}
         run: |
@@ -69,11 +70,12 @@ jobs:
           async def add_forums(known_ids):
               requested = {}
               rejected = 0
+              consecutive_rejections = 0
               async with aiotieba.Client(BDUSS=bduss) as client:
-                  for group, limit, names in GROUPS:
+                  for group, limit, names in GROUPS[1:] + GROUPS[:1]:
                       group_added = 0
                       for name in names.split():
-                          if len(known_ids | requested.keys()) >= TARGET or group_added >= limit:
+                          if len(known_ids | requested.keys()) >= TARGET or group_added >= limit or consecutive_rejections >= 2:
                               break
                           fid = int(await client.get_fid(name))
                           if not fid or fid in known_ids or fid in requested:
@@ -82,8 +84,18 @@ jobs:
                           if result:
                               requested[fid] = group
                               group_added += 1
+                              consecutive_rejections = 0
                           else:
                               rejected += 1
+                              consecutive_rejections += 1
+                              error = result.err
+                              reason = getattr(error, 'msg', '') or ''
+                              print(f'Follow rejection code: {getattr(error, "code", "unknown")}')
+                              for marker in ('上限', '频繁', '风控', '稍后', '验证'):
+                                  if marker in reason:
+                                      print(f'Follow restriction: {marker}')
+                                      consecutive_rejections = 2
+                                      break
                           await asyncio.sleep(0.8)
               print(f'Follow requests rejected: {rejected}')
               return requested
@@ -106,6 +118,8 @@ jobs:
 
               print(f'Forums after: {len(after)}')
               print(f'New follows verified: {len(after - before)}')
+              with open(os.environ.get('GITHUB_OUTPUT', os.devnull), 'a', encoding='utf-8') as output:
+                  print(f'new_follows={len(after - before)}', file=output)
               for group, _, _ in GROUPS:
                   count = sum(fid in after and category == group for fid, category in requested.items())
                   print(f'{group}: {count}')
@@ -117,6 +131,7 @@ jobs:
           PY
 
       - name: Verify sign-in
+        if: steps.follow.outputs.new_follows != '0'
         env:
           BDUSS: ${{ secrets.BDUSS }}
         shell: bash
